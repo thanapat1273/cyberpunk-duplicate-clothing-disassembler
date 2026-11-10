@@ -2,7 +2,7 @@
 
 A Cyber Engine Tweaks (CET) mod that disassembles duplicate clothing in V's backpack. From each set of copies it keeps the best one and disassembles the rest. It shows you the list first and only acts when you confirm.
 
-Built 2026-11-10 for game 2.x. **Not tested in game yet.** There was no Lua interpreter to run it here, so the first launch is also its syntax check.
+Built 2026-11-10 for game 2.5. Checked in game ✅: the scan (colour variants stay apart, quality is read correctly), then disassembling 9 real duplicates with 0 failures; a rescan found 0 left. **The Disassemble Junk button link (below) is new and still being tested.**
 
 ## What counts as a duplicate
 
@@ -34,7 +34,7 @@ It uses the game's own path, the same one as the backpack's **Disassemble junk**
 
 So the vanilla checks run again on every item, and you get the normal components.
 
-**Wardrobe:** the wardrobe keeps its own list of every clothing record you've owned (`WardrobeSystem.GetStoredItemIDs`). Disassembling a copy should leave its look in the wardrobe. **Not yet checked in game.**
+**Wardrobe:** one copy of every item is always kept, so no look ever leaves your wardrobe.
 
 ## Install
 
@@ -52,6 +52,12 @@ Copy the `bin` folder into the game folder, so the file ends up at:
 4. Click **Disassemble N item(s)…**, then **Yes, disassemble**.
 5. Click **Scan** again to check that nothing is left.
 
+**From the backpack's Disassemble Junk button** (on by default):
+- **Clicking it** opens the usual confirmation. Its number counts your junk **plus** the duplicate clothing copies. With no junk but some duplicates, the button opens the confirmation instead of saying there's no junk.
+- **Confirming** disassembles the junk as usual, then the duplicates, with the same rules as above.
+- **To turn it off**, untick **"Also run with the backpack's Disassemble Junk button"** in the overlay window. The choice is saved in `settings.json` in the mod's folder.
+- **If a hook ever fails** (e.g. after a game update), the button falls back to its vanilla behaviour and the reason goes to `scripting.log`.
+
 **From the CET console** (output in `scripting.log`):
 ```lua
 GetMod("DuplicateClothingDisassembler").scan() error("flush")
@@ -63,19 +69,19 @@ GetMod("DuplicateClothingDisassembler").run()
 ## First in-game test (checklist)
 
 1. **Load check:** `scripting.log` shows `[DuplicateClothingDisassembler] loaded`, and there are no Lua errors in `cyber_engine_tweaks.log`.
-2. **Test setup:** on a test save, give yourself duplicates in the CET console, then **Scan**:
+2. **Test setup:** on a test save, give yourself duplicates in the CET console, then **Scan**. `Game.AddToInventory` gives **one** clothing item per call whatever the count, so run the first line twice:
    ```lua
-   Game.AddToInventory("Items.Jacket_05_basic_02", 2)
+   Game.AddToInventory("Items.Jacket_05_basic_02", 1)
    ```
    ```lua
    Game.AddToInventory("Items.Jacket_05_basic_01", 1)
    ```
-   Expected: one Jacket_05_basic_02 to disassemble, and nothing from basic_01.
-3. **Disassemble and check:** run it, then check that the components arrived and the wardrobe still has the look.
+   Expected: one Jacket_05_basic_02 to disassemble, and nothing from basic_01 (a different colour). Checked in game 2026-11-10 ✅.
+3. **Disassemble and check:** run it, check that the crafting components arrived, then **Scan** again; it should find 0 duplicates.
 
 ## Uninstall
 
-Delete the `DuplicateClothingDisassembler` folder. The mod stores nothing and changes nothing until you click Disassemble.
+Delete the `DuplicateClothingDisassembler` folder. It stores only its own `settings.json`, and changes nothing until you confirm a disassemble.
 
 ## Licence
 

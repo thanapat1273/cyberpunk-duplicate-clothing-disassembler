@@ -13,9 +13,26 @@ local QUALITY_NAMES = { [0] = "Common", "Common+", "Uncommon", "Uncommon+", "Rar
                         "Legendary", "Legendary+", "Legendary++" }
 
 local state = { overlay = false, plan = nil, confirm = false, message = "" }
+local settings = { linkJunk = true }   -- also disassemble duplicates when you confirm the backpack's "Disassemble junk"
 
 local function log(text)
     print("[" .. MOD .. "] " .. tostring(text))
+end
+
+-- settings.json lives in this mod's own folder (the only place a CET mod may write)
+local function loadSettings()
+    local f = io.open("settings.json", "r")
+    if not f then return end
+    local ok, t = pcall(json.decode, f:read("*a"))
+    f:close()
+    if ok and type(t) == "table" and type(t.linkJunk) == "boolean" then settings.linkJunk = t.linkJunk end
+end
+
+local function saveSettings()
+    local f = io.open("settings.json", "w")
+    if not f then return end
+    f:write(json.encode(settings))
+    f:close()
 end
 
 -- quality as a sortable number: Common 0 ... Legendary++ 10 (the game's own tier order)
@@ -71,7 +88,7 @@ local function pickDuplicates(copies)
 end
 
 local function scan()
-    local player = GetPlayer()
+    local player = Game.GetPlayer()
     if not player then return nil, "No player yet: load a save first." end
     local ok, list = Game.GetTransactionSystem():GetItemList(player)
     if not ok or not list then return nil, "Couldn't read the backpack." end
@@ -115,7 +132,7 @@ local function scan()
 end
 
 local function disassemble(plan)
-    local player = GetPlayer()
+    local player = Game.GetPlayer()
     local done, failed = 0, 0
     for _, g in ipairs(plan.groups) do
         for _, d in ipairs(g.drop) do
@@ -131,7 +148,69 @@ local function qualityName(rank)
     return QUALITY_NAMES[rank] or tostring(rank)
 end
 
-registerForEvent("onInit", function() log("loaded") end)
+-- The backpack's "Disassemble junk" button (BackpackMainGameController, see backpack_main.script):
+--   click   -> OnDisassembleJunkButtonClick: with no junk it only says "no junk"; we open the popup if there are duplicates
+--   popup   -> OpenDisassembleJunkConfirmation: the vanilla popup, with the count = junk + duplicate clothing copies
+--   confirm -> OnDisassembleJunkPopupClosed: vanilla disassembles the junk; afterwards we disassemble the duplicates
+-- Every hook falls back to the vanilla code if anything goes wrong, so the button keeps working.
+local function hookJunkButton()
+    Override("BackpackMainGameController", "OnDisassembleJunkButtonClick", function(this, e, wrappedMethod)
+        if settings.linkJunk then
+            local ok, opened = pcall(function()
+                if not (e:IsAction("click") or e:IsAction("tap")) then return false end
+                if #this.m_junkItems > 0 then return false end
+                local plan = scan()
+                if plan and plan.total > 0 then
+                    this:OpenDisassembleJunkConfirmation()
+                    return true
+                end
+                return false
+            end)
+            if ok and opened then return true end
+        end
+        return wrappedMethod(e)
+    end)
+
+    Override("BackpackMainGameController", "OpenDisassembleJunkConfirmation", function(this, wrappedMethod)
+        if not settings.linkJunk then return wrappedMethod() end
+        local ok, err = pcall(function()
+            local count = 0
+            for _, item in ipairs(this.m_junkItems) do count = count + item:GetQuantity(true) end
+            local plan = scan()
+            count = count + ((plan and plan.total) or 0)
+            local data = VendorSellJunkPopupData.new()
+            data.notificationName = CName.new("base\\gameplay\\gui\\widgets\\notifications\\vendor_sell_junk_confirmation.inkwidget")
+            data.isBlocking = true
+            data.useCursor = true
+            data.queueName = CName.new("modal_popup")
+            data.itemsQuantity = count
+            data.actionType = VendorSellJunkActionType.Disassemble
+            this.m_disassembleJunkPopupToken = this:ShowGameNotification(data)
+            this.m_disassembleJunkPopupToken:RegisterListener(this, "OnDisassembleJunkPopupClosed")
+            this.m_buttonHintsController:Hide()
+        end)
+        if not ok then
+            log("junk popup: falling back to vanilla (" .. tostring(err) .. ")")
+            return wrappedMethod()
+        end
+    end)
+
+    ObserveAfter("BackpackMainGameController", "OnDisassembleJunkPopupClosed", function(this, data)
+        if not settings.linkJunk then return end
+        local ok, err = pcall(function()
+            if not data.confirm then return end
+            local plan = scan()          -- fresh scan: what's in the backpack right now
+            if plan and plan.total > 0 then disassemble(plan) end
+        end)
+        if not ok then log("junk confirm: " .. tostring(err)) end
+    end)
+end
+
+registerForEvent("onInit", function()
+    loadSettings()
+    local ok, err = pcall(hookJunkButton)
+    log(ok and ("loaded (Disassemble junk link " .. (settings.linkJunk and "on" or "off") .. ")") or ("loaded, but the junk button hook failed: " .. tostring(err)))
+end)
 registerForEvent("onOverlayOpen", function() state.overlay = true end)
 registerForEvent("onOverlayClose", function() state.overlay = false; state.confirm = false end)
 
@@ -164,6 +243,8 @@ registerForEvent("onDraw", function()
 
     ImGui.TextWrapped("Keeps the best copy of each clothing item (same item, same colour) and disassembles the "
         .. "other copies in V's backpack. Equipped, quest and iconic items and the stash are never touched.")
+    local linked, changed = ImGui.Checkbox("Also run with the backpack's Disassemble Junk button", settings.linkJunk)
+    if changed then settings.linkJunk = linked; saveSettings() end
     if ImGui.Button("Scan backpack") then
         local plan, err = scan()
         state.plan, state.confirm = plan, false
