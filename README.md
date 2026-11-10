@@ -2,7 +2,18 @@
 
 A Cyber Engine Tweaks (CET) mod that disassembles duplicate clothing in V's backpack. From each set of copies it keeps the best one and disassembles the rest. It shows you the list first and only acts when you confirm.
 
-Built 2026-11-10 for game 2.5. Checked in game ✅: the scan (colour variants stay apart, quality is read correctly), then disassembling 9 real duplicates with 0 failures; a rescan found 0 left. **The Disassemble Junk button link (below) is new and still being tested.**
+Built 2026-11-10 for game 2.5. Checked in game ✅:
+- **The scan:** colour variants stay apart, and quality is read correctly.
+- **The overlay:** disassembled 9 real duplicates with 0 failures, and a rescan found 0 left.
+- **The Disassemble Junk button** (2026-11-11), in every combination tried, with Confirm and Cancel each time:
+  - duplicates only;
+  - junk only;
+  - both;
+  - cancel, then reopen.
+
+  The popup always closed cleanly.
+
+Not yet tried: turning the link off with the checkbox.
 
 ## What counts as a duplicate
 
@@ -56,7 +67,8 @@ Copy the `bin` folder into the game folder, so the file ends up at:
 - **Clicking it** opens the usual confirmation. Its number counts your junk **plus** the duplicate clothing copies. With no junk but some duplicates, the button opens the confirmation instead of saying there's no junk.
 - **Confirming** disassembles the junk as usual, then the duplicates, with the same rules as above.
 - **To turn it off**, untick **"Also run with the backpack's Disassemble Junk button"** in the overlay window. The choice is saved in `settings.json` in the mod's folder.
-- **If a hook ever fails** (e.g. after a game update), the button falls back to its vanilla behaviour and the reason goes to `scripting.log`.
+- **If a hook ever fails** (e.g. after a game update), the button falls back to its vanilla behaviour and the reason goes to the mod's log.
+- **If a popup ever stays stuck** (screen dimmed, nothing responds), run `GetMod("DuplicateClothingDisassembler").unlock()` in the CET console.
 
 **From the CET console** (output in `scripting.log`):
 ```lua

@@ -15,8 +15,10 @@ local QUALITY_NAMES = { [0] = "Common", "Common+", "Uncommon", "Uncommon+", "Rar
 local state = { overlay = false, plan = nil, confirm = false, message = "" }
 local settings = { linkJunk = true }   -- also disassemble duplicates when you confirm the backpack's "Disassemble junk"
 
+-- print() goes to scripting.log, which CET buffers; spdlog writes this mod's own DuplicateClothingDisassembler.log
 local function log(text)
     print("[" .. MOD .. "] " .. tostring(text))
+    pcall(function() spdlog.info(tostring(text)) end)
 end
 
 -- settings.json lives in this mod's own folder (the only place a CET mod may write)
@@ -152,43 +154,69 @@ end
 --   click   -> OnDisassembleJunkButtonClick: with no junk it only says "no junk"; we open the popup if there are duplicates
 --   popup   -> OpenDisassembleJunkConfirmation: the vanilla popup, with the count = junk + duplicate clothing copies
 --   confirm -> OnDisassembleJunkPopupClosed: vanilla disassembles the junk; afterwards we disassemble the duplicates
--- Every hook falls back to the vanilla code if anything goes wrong, so the button keeps working.
+-- Every hook falls back to the vanilla code if anything goes wrong (and logs why), so the button keeps working.
+
+-- CET can't read the backpack controller's private fields (m_junkItems came back nil in game), so the junk is counted
+-- here with the game's own rule (UIInventoryItem.IsJunk): item type Gen_Junk or Gen_Jewellery.
+local function junkCount()
+    local ok, list = Game.GetTransactionSystem():GetItemList(Game.GetPlayer())
+    if not ok or not list then return 0 end
+    local junk, jewel = EnumInt(gamedataItemType.Gen_Junk), EnumInt(gamedataItemType.Gen_Jewellery)
+    local n = 0
+    for _, d in ipairs(list) do
+        local t = EnumInt(d:GetItemType())
+        if t == junk or t == jewel then n = n + d:GetQuantity() end
+    end
+    return n
+end
+
+-- the vanilla "Disassemble junk" confirmation (backpack_main.script, OpenDisassembleJunkConfirmation), with the count
+-- = junk + duplicate clothing copies. Only public calls; the token is kept here so the popup's listener stays alive.
+local function openJunkPopup(this, junk, duplicates)
+    local data = VendorSellJunkPopupData.new()
+    data.notificationName = CName.new("base\\gameplay\\gui\\widgets\\notifications\\vendor_sell_junk_confirmation.inkwidget")
+    data.isBlocking = true
+    data.useCursor = true
+    data.queueName = CName.new("modal_popup")
+    data.itemsQuantity = junk + duplicates
+    data.actionType = VendorSellJunkActionType.Disassemble
+    state.junkToken = this:ShowGameNotification(data)
+    state.junkToken:RegisterListener(this, "OnDisassembleJunkPopupClosed")
+    log(("junk popup: %d junk + %d duplicate clothing"):format(junk, duplicates))
+end
+
+local function releaseJunkToken()
+    if state.junkToken then
+        state.junkToken = nil
+        collectgarbage()        -- free the handle now, so the game sees the popup's token released
+    end
+end
+
+local function duplicateCount()
+    local plan = scan()
+    return (plan and plan.total) or 0
+end
+
 local function hookJunkButton()
     Override("BackpackMainGameController", "OnDisassembleJunkButtonClick", function(this, e, wrappedMethod)
         if settings.linkJunk then
-            local ok, opened = pcall(function()
-                if not (e:IsAction("click") or e:IsAction("tap")) then return false end
-                if #this.m_junkItems > 0 then return false end
-                local plan = scan()
-                if plan and plan.total > 0 then
-                    this:OpenDisassembleJunkConfirmation()
-                    return true
-                end
-                return false
+            local ok, res = pcall(function()
+                if not (e:IsAction("click") or e:IsAction("tap")) then return "skip" end
+                if junkCount() > 0 then return "skip" end   -- with junk, vanilla opens the popup (hooked below)
+                local n = duplicateCount()
+                if n == 0 then return "skip" end            -- neither: vanilla says "no junk to disassemble"
+                openJunkPopup(this, 0, n)
+                return "opened"
             end)
-            if ok and opened then return true end
+            if ok and res == "opened" then return true end
+            if not ok then log("junk click: falling back to vanilla (" .. tostring(res) .. ")") end
         end
         return wrappedMethod(e)
     end)
 
     Override("BackpackMainGameController", "OpenDisassembleJunkConfirmation", function(this, wrappedMethod)
         if not settings.linkJunk then return wrappedMethod() end
-        local ok, err = pcall(function()
-            local count = 0
-            for _, item in ipairs(this.m_junkItems) do count = count + item:GetQuantity(true) end
-            local plan = scan()
-            count = count + ((plan and plan.total) or 0)
-            local data = VendorSellJunkPopupData.new()
-            data.notificationName = CName.new("base\\gameplay\\gui\\widgets\\notifications\\vendor_sell_junk_confirmation.inkwidget")
-            data.isBlocking = true
-            data.useCursor = true
-            data.queueName = CName.new("modal_popup")
-            data.itemsQuantity = count
-            data.actionType = VendorSellJunkActionType.Disassemble
-            this.m_disassembleJunkPopupToken = this:ShowGameNotification(data)
-            this.m_disassembleJunkPopupToken:RegisterListener(this, "OnDisassembleJunkPopupClosed")
-            this.m_buttonHintsController:Hide()
-        end)
+        local ok, err = pcall(function() openJunkPopup(this, junkCount(), duplicateCount()) end)
         if not ok then
             log("junk popup: falling back to vanilla (" .. tostring(err) .. ")")
             return wrappedMethod()
@@ -196,11 +224,15 @@ local function hookJunkButton()
     end)
 
     ObserveAfter("BackpackMainGameController", "OnDisassembleJunkPopupClosed", function(this, data)
+        -- The popup lives as long as someone holds its token (the popup itself only has a weak ref, see
+        -- gameNotificationsUtilities.script). Vanilla drops its reference here (m_disassembleJunkPopupToken = NULL);
+        -- ours must go too, or the dimmed blocking layer stays up and soft-locks the menu.
+        releaseJunkToken()
         if not settings.linkJunk then return end
         local ok, err = pcall(function()
-            if not data.confirm then return end
+            if not data.confirm then log("junk popup: cancelled") return end
             local plan = scan()          -- fresh scan: what's in the backpack right now
-            if plan and plan.total > 0 then disassemble(plan) end
+            if plan and plan.total > 0 then disassemble(plan) else log("junk confirm: no duplicates to disassemble") end
         end)
         if not ok then log("junk confirm: " .. tostring(err)) end
     end)
@@ -211,6 +243,7 @@ registerForEvent("onInit", function()
     local ok, err = pcall(hookJunkButton)
     log(ok and ("loaded (Disassemble junk link " .. (settings.linkJunk and "on" or "off") .. ")") or ("loaded, but the junk button hook failed: " .. tostring(err)))
 end)
+registerForEvent("onShutdown", function() releaseJunkToken() end)   -- also on "Reload All Mods"
 registerForEvent("onOverlayOpen", function() state.overlay = true end)
 registerForEvent("onOverlayClose", function() state.overlay = false; state.confirm = false end)
 
@@ -233,6 +266,12 @@ local DuplicateClothing = {
         if not state.plan then log('scan first: GetMod("DuplicateClothingDisassembler").scan()') return end
         disassemble(state.plan)
         state.plan = nil
+    end,
+    -- safety valve: if a popup this mod opened ever stays stuck, release it from the console
+    unlock = function()
+        local had = state.junkToken ~= nil
+        releaseJunkToken()
+        log(had and "unlock: released the popup" or "unlock: no popup held")
     end,
 }
 
