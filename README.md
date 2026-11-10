@@ -76,3 +76,7 @@ GetMod("DuplicateClothingDisassembler").run()
 ## Uninstall
 
 Delete the `DuplicateClothingDisassembler` folder. The mod stores nothing and changes nothing until you click Disassemble.
+
+## Licence
+
+MIT, see [LICENSE](LICENSE). Cyberpunk 2077 is a trademark of CD PROJEKT S.A.; this is an unofficial fan mod.
